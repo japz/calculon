@@ -32,12 +32,14 @@ def add_game(bot, game_id):
     if game_id in bot.config.civ.games:
         bot.say('Already tracking game ' + game_id)
         return
-    bot.config.civ.games.append(game_id)
-    bot.config.save()
+
     data = fetch_game(game_id)
     if not data['active_player']:
         bot.say('Game is not active')
         return
+
+    bot.config.civ.games.append(game_id)
+    bot.config.save()
     bot.say('Game {id} with active player {active_player} added'.format(**data))
 
 
