@@ -1,14 +1,13 @@
 from __future__ import unicode_literals
 from bs4 import BeautifulSoup
-from willie import tools, web
-import copy
+from willie import web
 import willie.module
 import re
 import time
 
 _NAME = 'civ'
 _BASE = 'http://multiplayerrobot.com/Game/Details?id='
-_INTERVAL = 300
+_INTERVAL = 60
 
 def setup(bot):
     bot.config.add_section('civ')
@@ -29,20 +28,21 @@ def fetch_game(game_id):
         uri = _BASE + game_id
         headers = {'Content-Length': '0'}
         data = web.post(uri, headers)
+        if data == 'timed out':
+            raise Exception('Timeout connecting to GMR')
         soup = BeautifulSoup(data)
         data = {'id': game_id,
                 'active_player': soup.find(class_='game-host').find(class_='avatar').attrs['title'],
                 'turn_timer': soup.find(id='turn-timer-container').find('strong').string}
     except Exception as e:
+        print "Error while getting game status from {}: {}".format(uri, e)
         return e
 
     return data
 
 
-def update_games(bot, wait=False):
+def update_games(bot, trigger=None):
     if bot.memory['civ_update_lock']['_global']:
-        if not wait:
-            return False
         while bot.memory['civ_update_lock']['_global']:
             time.sleep(1)
         return True
@@ -52,15 +52,25 @@ def update_games(bot, wait=False):
         for game in bot.config.civ.get_list('games'):
             data = fetch_game(game)
             if isinstance(data, Exception):
-                bot.memory['civ_game_status'][game] = data
+                if trigger:
+                    bot.say("Error updating game {} status: {}".format(game, data))
             elif game not in bot.memory['civ_game_status']:
+                # Do not trigger game update notification if we did not know this game yet
                 data['updated'] = time.time()
+                data['new'] = False
                 bot.memory['civ_game_status'][game] = data
             else:
                 old_data = bot.memory['civ_game_status'][game]
-                if old_data['active_player'] != data['active_player'] or old_data['turn_timer'] != data['turn_timer']:
-                    data['updated'] = time.time()
-                    bot.memory['civ_game_status'][game] = data
+                try:
+                    if old_data['active_player'] != data['active_player'] or old_data['turn_timer'] != data['turn_timer']:
+                        print "[civ] updated game {}".format(game)
+                        data['updated'] = time.time()
+                        data['new'] = True
+                        bot.memory['civ_game_status'][game] = data
+                except:
+                    print old_data
+                    print data
+                    raise
 
     except Exception:
         raise
@@ -117,13 +127,11 @@ def game_status(bot, trigger):
         return
     bot.memory['civ_update_lock'][trigger.sender] = trigger.nick
 
-    update_games(bot, wait=True)
-
     for game in sorted(bot.config.civ.get_list('games')):
-        data = bot.memory['civ_game_status'][game]
-        if isinstance(data, Exception):
-            text_bit = 'Game {}: Error fetching status: {}'.format(game, data)
+        if game not in bot.memory['civ_game_status'].keys():
+            text_bit = 'Game {}: N/A'.format(game)
         else:
+            data = bot.memory['civ_game_status'][game]
             text_bit = 'Game {id}: Active player is {active_player}, turn ends on {turn_timer}'.format(**data)
         bot.say(text_bit)
     del(bot.memory['civ_update_lock'][trigger.sender])
@@ -132,7 +140,7 @@ def game_status(bot, trigger):
 @willie.module.commands('civ')
 @willie.module.example('.civ [{add|del} <game-id>]')
 def civ(bot, trigger):
-    '''Civilization 5 MPR game info'''
+    '''Civilization 5 GMR interface'''
 
     if not trigger.group(2):
         game_status(bot, trigger)
@@ -159,12 +167,11 @@ def civ(bot, trigger):
 def interval_update_games(bot):
     if len(bot.config.civ.announce_channels) == 0:
         return
-    update_games(bot, wait=True)
+    update_games(bot)
     status = bot.memory['civ_game_status']
     for game in bot.config.civ.get_list('games'):
         game_status = status[game]
-        if isinstance(game_status, Exception):
-            continue
-        if time.time() - game_status['updated'] < _INTERVAL:
+        if game_status['new']:
+            game_status['new'] = False
             for chan in bot.config.civ.get_list('announce_channels'):
                 bot.msg(chan, 'Game {id} TURN! New active player is {active_player}, turn ends on {turn_timer}'.format(**game_status))
